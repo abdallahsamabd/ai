@@ -136,7 +136,13 @@ test-store-features:
 test-schema:
 	cargo test -p praxis-tests-schema --features store-all $(_NOCAPTURE)
 
+# The suite's subprocess tests need the praxis-ai binary prebuilt and named:
+# the harness refuses to build it from inside a test (see praxis_ai_bin in
+# tests/utils), because a nested cargo build inherits the outer run's
+# instrumentation and target-dir locks and can run for minutes.
 test-integration:
+	cargo build -p praxis-ai-proxy --bin praxis-ai
+	PRAXIS_AI_BIN=$(abspath target/debug/praxis-ai) \
 	cargo test -p praxis-tests-integration --features store-all $(_NOCAPTURE)
 	cargo test -p praxis-tests-integration --features store-all,$(INTEGRATION_EXPERIMENTAL_FEATURES) --test suite \
 		-- examples::azure_ad examples::gcp_adc examples::lakera_guard examples::token_rate_limit \
@@ -255,7 +261,12 @@ audit:
 	cargo audit
 	cargo deny check
 
+# The plain (uninstrumented) binary serves the suite's subprocess tests;
+# building it inside the coverage run would inherit llvm-cov's RUSTFLAGS
+# and target dir and rebuild the world mid-test (see praxis_ai_bin).
 coverage-check:
+	cargo build -p praxis-ai-proxy --bin praxis-ai
+	PRAXIS_AI_BIN=$(abspath target/debug/praxis-ai) \
 	cargo llvm-cov --workspace --features $(STORE_ALL_WORKSPACE_FEATURES) --json \
 		--exclude xtask \
 		--ignore-filename-regex '(target/|tests/|store/postgres\.rs)' \
