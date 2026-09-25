@@ -7119,6 +7119,114 @@ def test_invalid_tool_choice_raises_bad_request(openai_client):
     assert "tool_choice" in str(exc_info.value).lower()
 
 
+@requires_vllm_compat
+def test_null_tool_choice_succeeds_sdk(openai_client):
+    """Verify explicit tool_choice=None succeeds via the OpenAI SDK and returns normalized tool_choice='auto'."""
+    response = openai_client.responses.create(
+        model=VLLM_MODEL,
+        input="Hello",
+        tools=[
+            {
+                "type": "function",
+                "name": "test_tool",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+        tool_choice=None,
+    )
+    assert response.status == "completed"
+    assert response.tool_choice == "auto"
+
+
+@pytest.mark.parametrize(
+    "tool_choice,with_tools",
+    [
+        (None, True),  # explicit null with tools
+        (None, False),  # explicit null without tools
+        ("none", True),
+        ("none", False),
+        ("auto", True),
+        ("auto", False),
+        ({"type": "function", "name": "test_tool"}, True),
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+@requires_vllm_compat
+def test_valid_tool_choice_variants_raw_http(openai_client, tool_choice, with_tools, stream):
+    """Verify valid tool_choice variants (null, omitted, none, auto, forced) over raw HTTP in buffered and streaming modes."""
+    body = {
+        "model": VLLM_MODEL,
+        "input": "Hello",
+        "stream": stream,
+        "tool_choice": tool_choice,
+    }
+    if with_tools:
+        body["tools"] = [
+            {
+                "type": "function",
+                "name": "test_tool",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+
+    raw = httpx.post(
+        f"{str(openai_client.base_url).rstrip('/')}/responses",
+        headers={"Authorization": "Bearer test", **TRUSTED_OWNER_HEADERS},
+        json=body,
+        timeout=30,
+    )
+    assert raw.status_code == 200, f"Failed for choice={tool_choice}, tools={with_tools}, stream={stream}: {raw.text}"
+
+    expected_choice = "auto" if tool_choice is None else tool_choice
+    if not stream:
+        data = raw.json()
+        assert data["tool_choice"] == expected_choice
+    else:
+        # Check that emitted SSE response objects carry normalized tool_choice
+        for line in raw.text.splitlines():
+            if line.startswith("data: "):
+                try:
+                    event = json.loads(line[6:])
+                    if isinstance(event, dict) and "response" in event:
+                        assert event["response"]["tool_choice"] == expected_choice
+                except json.JSONDecodeError:
+                    pass
+
+
+@pytest.mark.parametrize(
+    "malformed_choice",
+    [
+        42,
+        {"name": "test_tool"},  # missing "type" discriminator
+        "invalid_choice",
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+@requires_vllm_compat
+def test_malformed_tool_choice_variants_raw_http(openai_client, malformed_choice, stream):
+    """Verify malformed tool_choice variants return 400 over raw HTTP in buffered and streaming modes."""
+    raw = httpx.post(
+        f"{str(openai_client.base_url).rstrip('/')}/responses",
+        headers={"Authorization": "Bearer test", **TRUSTED_OWNER_HEADERS},
+        json={
+            "model": VLLM_MODEL,
+            "input": "Hello",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "test_tool",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "tool_choice": malformed_choice,
+            "stream": stream,
+        },
+        timeout=30,
+    )
+    assert raw.status_code == 400
+    assert "tool_choice" in raw.text.lower() or "invalid" in raw.text.lower()
+
+
 # ---------------------------------------------------------------------------
 # openai_file_resolve outbound-chain (fully stubbed upstreams; no vLLM/OGX)
 # ---------------------------------------------------------------------------
